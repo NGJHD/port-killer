@@ -1,5 +1,8 @@
 # Port Killer
 
+<img width="1913" height="1018" alt="Screenshot 2026-09-10 195322" src="https://github.com/user-attachments/assets/0672884d-2550-4c92-abec-281c10b3cf04" />
+
+
 Double-click **`port-killer.bat`**. It scans every listening TCP port, works out
 which ones are dev servers, writes **`port.html`** next to the script, and opens
 that file in your browser.
