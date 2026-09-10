@@ -1,8 +1,8 @@
 @echo off
 setlocal
-title Claude Port Cleanup
+title Port Killer
 
-set "PS1=%~dp0claude-ports.ps1"
+set "PS1=%~dp0port-killer.ps1"
 if not exist "%PS1%" (
   echo Could not find "%PS1%"
   pause

@@ -1,8 +1,8 @@
-# Claude Port Cleanup
+# Port Killer
 
-Double-click **`claude-ports.bat`**. It scans every listening TCP port, works out
-which ones belong to servers Claude Code started, writes **`port.html`** next to
-the script, and opens that file in your browser.
+Double-click **`port-killer.bat`**. It scans every listening TCP port, works out
+which ones are dev servers, writes **`port.html`** next to the script, and opens
+that file in your browser.
 
 `port.html` is a plain local file (`file:///.../port.html`) — nothing is hosted.
 
@@ -25,27 +25,32 @@ still give you the exact command to paste.
 
 | badge | rule |
 | --- | --- |
-| **Claude** | a live `claude.exe` / Claude Code process is an ancestor of the listening process, **or** the project folder it is serving contains `.claude` or `CLAUDE.md` (this catches vite/next servers left running after the Claude session that started them has already exited — usually what you are here to clean up) |
-| **dev server** | a known dev runtime (node, bun, deno, python, dotnet…) or a known dev port (3000, 5173, 8000…) |
+| **dev server** | a known dev runtime (node, bun, deno, python, dotnet…), a known dev port (3000, 5173, 8000…), **or** a coding-agent CLI is an ancestor of the listening process — that last rule catches servers on ports nothing else would recognise |
 | **other** | everything else, hidden by default |
 
-The app name comes from the page's own `<title>` (Claude Port Cleanup makes a
-1.2s HTTP request to each candidate port), falling back to the project folder
-name and then the process name.
+A dev server whose session has already exited gets reparented onto explorer, so
+the folder it is serving is the only tell left: if that folder holds agent config
+(`.claude`, `CLAUDE.md`, `.codex`, `AGENTS.md`, `.cursor`) the row is annotated
+*left over from a session that has already exited* — usually what you are here to
+clean up.
+
+The app name comes from the page's own `<title>` (Port Killer makes a 1.2s HTTP
+request to each candidate port), falling back to the project folder name and then
+the process name.
 
 ## Safety
 
-- Claude Code itself, this helper, and the shell chain that launched it are marked
-  **Protected** and cannot be killed from the page.
+- This helper and the shell chain that launched it are marked **Protected** and
+  cannot be killed from the page.
 - PIDs 0–4 are refused.
 - Kill is a single click with no confirmation, so aim before you click.
 
 ## Options
 
 ```
-claude-ports.bat                    scan, write port.html, open it, serve kills
-claude-ports.bat -NoBrowser         don't open the browser
-claude-ports.bat -HelperPort 47900  pin the helper port
+port-killer.bat                    scan, write port.html, open it, serve kills
+port-killer.bat -NoBrowser         don't open the browser
+port-killer.bat -HelperPort 47900  pin the helper port
 ```
 
 ## If the Kill buttons stay greyed out

@@ -1,9 +1,9 @@
 <#
-    claude-ports.ps1  --  scan listening TCP ports, work out which ones belong to
-    things Claude Code started (vite/next/python/etc), render a local port.html,
-    and run a tiny 127.0.0.1 helper so the Kill buttons on that page actually work.
+    port-killer.ps1  --  scan listening TCP ports, work out which ones are dev
+    servers (vite/next/python/etc), render a local port.html, and run a tiny
+    127.0.0.1 helper so the Kill buttons on that page actually work.
 
-    Launched by claude-ports.bat. Close the console window to stop the helper.
+    Launched by port-killer.bat. Close the console window to stop the helper.
 #>
 [CmdletBinding()]
 param(
@@ -69,16 +69,17 @@ function Get-Ancestry {
     return $chain
 }
 
-function Test-ClaudeProcess {
+# a coding-agent CLI: whatever it spawned is a dev server, however odd the port
+function Test-AgentProcess {
     param($Proc)
     if (-not $Proc) { return $false }
-    if ($Proc.Name -match '^claude(\.exe)?$') { return $true }
+    if ($Proc.Name -match '^(claude|codex|cursor-agent)(\.exe)?$') { return $true }
     $cl = $Proc.CommandLine
     if ($cl) {
-        if ($cl -match '@anthropic-ai[\\/]claude-code')         { return $true }
-        if ($cl -match '[\\/]claude(-code)?\.(exe|cmd|bat|js)')  { return $true }
-        if ($cl -match '[\\/]\.claude[\\/]')                     { return $true }
-        if ($cl -match 'claude-code[\\/]cli\.js')                { return $true }
+        if ($cl -match '@anthropic-ai[\\/]claude-code')                  { return $true }
+        if ($cl -match '[\\/](claude|codex)(-code)?\.(exe|cmd|bat|js)')  { return $true }
+        if ($cl -match '[\\/]\.(claude|codex|cursor)[\\/]')              { return $true }
+        if ($cl -match 'claude-code[\\/]cli\.js')                        { return $true }
     }
     return $false
 }
@@ -130,13 +131,18 @@ function Get-ProjectGuess {
     return $null
 }
 
-function Test-ClaudeProject {
+# agent config sitting in a folder means something was being developed there, and
+# that is the only tell left once the session that started the server has exited
+$agentMarkers = @('.claude', 'CLAUDE.md', '.codex', 'AGENTS.md', '.cursor')
+
+function Test-AgentProject {
     param([string]$Dir)
     if (-not $Dir) { return $false }
-    try {
-        if (Test-Path -LiteralPath (Join-Path $Dir '.claude'))   { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Dir 'CLAUDE.md')) { return $true }
-    } catch {}
+    foreach ($marker in $agentMarkers) {
+        try {
+            if (Test-Path -LiteralPath (Join-Path $Dir $marker)) { return $true }
+        } catch {}
+    }
     return $false
 }
 
@@ -150,7 +156,7 @@ function Get-HttpProbe {
         $req.Timeout           = 1200
         $req.ReadWriteTimeout  = 1200
         $req.AllowAutoRedirect = $true
-        $req.UserAgent         = 'claude-port-cleanup'
+        $req.UserAgent         = 'port-killer'
         $resp = $req.GetResponse()
     } catch [System.Net.WebException] {
         if ($_.Exception.Response) { $resp = $_.Exception.Response } else { return $info }
@@ -207,7 +213,7 @@ function Get-Listeners {
 }
 
 # processes we must never offer to kill: this helper and everything above it
-# (that chain contains claude.exe / the Claude Code node process itself)
+# (that chain is the console window and whatever session launched it)
 $script:ProtectedIds = @()
 try {
     $bootTable = Get-ProcessTable
@@ -252,9 +258,9 @@ function Get-Scan {
 
         $chain = @()
         if ($proc) { $chain = Get-Ancestry -Table $table -ProcId $entry.ProcId }
-        $claudeAnchor = $null
+        $agentAnchor = $null
         foreach ($node in $chain) {
-            if (Test-ClaudeProcess -Proc $node) { $claudeAnchor = $node; break }
+            if (Test-AgentProcess -Proc $node) { $agentAnchor = $node; break }
         }
 
         $cmdline = ''
@@ -264,16 +270,15 @@ function Get-Scan {
 
         $origin = 'other'
         $via    = $null
-        if ($claudeAnchor) {
-            $origin = 'claude'
-            $via    = "started by $($claudeAnchor.Name) ($($claudeAnchor.Id))"
+        if ($agentAnchor) {
+            $origin = 'dev'
+            $via    = "started from an agent session (PID $($agentAnchor.Id))"
         } elseif (($devNames -contains $procName) -or ($devPorts -contains $entry.Port)) {
             $origin = 'dev'
-            # a dev server whose Claude session has already exited is orphaned onto
-            # explorer/init, so fall back to "is this a Claude project folder?"
-            if (Test-ClaudeProject -Dir $project) {
-                $origin = 'claude'
-                $via    = 'serving a Claude project (session no longer running)'
+            # a dev server whose session has already exited is orphaned onto
+            # explorer/init, so the folder it serves is the only tell left
+            if (Test-AgentProject -Dir $project) {
+                $via = 'left over from a session that has already exited'
             }
         }
 
@@ -302,7 +307,7 @@ function Get-Scan {
             process    = $procName
             origin     = $origin
             protected  = ($script:ProtectedIds -contains $entry.ProcId)
-            claudeVia  = $via
+            via        = $via
             project    = $project
             cmdline    = $cmdline
             ancestry   = $ancestryText
@@ -316,16 +321,15 @@ function Get-Scan {
         })
     }
 
-    $rank   = @{ 'claude' = 0; 'dev' = 1; 'other' = 2 }
+    $rank   = @{ 'dev' = 0; 'other' = 1 }
     $sorted = @($rows | Sort-Object -Property @{ Expression = { $rank[$_.origin] } }, @{ Expression = { $_.port } })
 
     return [ordered]@{
         scannedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
         machine   = $env:COMPUTERNAME
         counts    = [ordered]@{
-            claude = @($sorted | Where-Object { $_.origin -eq 'claude' }).Count
-            dev    = @($sorted | Where-Object { $_.origin -eq 'dev' }).Count
-            other  = @($sorted | Where-Object { $_.origin -eq 'other' }).Count
+            dev   = @($sorted | Where-Object { $_.origin -eq 'dev' }).Count
+            other = @($sorted | Where-Object { $_.origin -eq 'other' }).Count
         }
         rows      = $sorted
     }
@@ -338,7 +342,7 @@ function Invoke-Kill {
         return [ordered]@{ ok = $false; message = 'Refused: system process.' }
     }
     if ($script:ProtectedIds -contains $TargetPid) {
-        return [ordered]@{ ok = $false; message = 'Refused: that is Claude Code itself (or this helper).' }
+        return [ordered]@{ ok = $false; message = 'Refused: that is this tool (or the shell that launched it).' }
     }
     $proc = Get-Process -Id $TargetPid -ErrorAction SilentlyContinue
     if (-not $proc) {
@@ -362,12 +366,12 @@ $htmlTemplate = @'
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Ports</title>
+<title>Port Killer</title>
 <style>
   :root{
     --bg:#0e1116; --panel:#161b23; --panel2:#1c222c; --line:#262d38;
     --ink:#e6edf3; --dim:#8b96a5; --faint:#5d6774;
-    --claude:#d97757; --dev:#5aa9e6; --other:#6f7787;
+    --dev:#5aa9e6; --other:#6f7787;
     --danger:#e05260; --ok:#3fb950;
   }
   *{box-sizing:border-box}
@@ -411,7 +415,6 @@ $htmlTemplate = @'
   .port a:hover{color:var(--dev);text-decoration:underline}
   .badge{display:inline-block;margin-top:6px;font-size:10.5px;letter-spacing:.05em;
          text-transform:uppercase;padding:2px 7px;border-radius:5px;font-weight:600}
-  .b-claude{background:rgba(217,119,87,.16);color:var(--claude)}
   .b-dev{background:rgba(90,169,230,.14);color:var(--dev)}
   .b-other{background:rgba(111,119,135,.16);color:var(--other)}
   .app{font-weight:600}
@@ -442,14 +445,13 @@ $htmlTemplate = @'
 <body>
 <div class="wrap">
   <header>
-    <h1>Claude Ports</h1>
+    <h1>Port Killer</h1>
     <span class="sub" id="stamp"></span>
   </header>
 
   <div id="banner" class="banner"></div>
 
   <div class="bar">
-    <button class="chip on" data-f="claude">Claude<span class="n" id="c-claude">0</span></button>
     <button class="chip on" data-f="dev">Dev servers<span class="n" id="c-dev">0</span></button>
     <button class="chip" data-f="other">Everything else<span class="n" id="c-other">0</span></button>
     <input type="search" id="q" placeholder="filter by port, app, process, path...">
@@ -463,7 +465,7 @@ $htmlTemplate = @'
 
   <footer>
     Kill buttons talk to the local helper at <code>__HELPER__</code>, started by
-    <code>claude-ports.bat</code>. Close that console window to stop it &mdash; this page keeps
+    <code>port-killer.bat</code>. Close that console window to stop it &mdash; this page keeps
     working as a read-only snapshot.
   </footer>
 </div>
@@ -472,7 +474,7 @@ $htmlTemplate = @'
 <script>
 const HELPER = "__HELPER__";
 let data = __DATA__;
-let filters = new Set(["claude", "dev"]);
+let filters = new Set(["dev"]);
 let timer = null;
 
 const $ = (id) => document.getElementById(id);
@@ -498,8 +500,7 @@ function rowsOf(d) {
 
 function render() {
   const rows = rowsOf(data);
-  const counts = (data && data.counts) || { claude: 0, dev: 0, other: 0 };
-  $("c-claude").textContent = counts.claude;
+  const counts = (data && data.counts) || { dev: 0, other: 0 };
   $("c-dev").textContent = counts.dev;
   $("c-other").textContent = counts.other;
   $("stamp").textContent = "scanned " + (data ? data.scannedAt : "?") +
@@ -519,17 +520,16 @@ function render() {
   }
 
   const body = shown.map((r) => {
-    const badge = r.origin === "claude" ? '<span class="badge b-claude">Claude</span>'
-                : r.origin === "dev"    ? '<span class="badge b-dev">dev server</span>'
-                                        : '<span class="badge b-other">other</span>';
+    const badge = r.origin === "dev" ? '<span class="badge b-dev">dev server</span>'
+                                     : '<span class="badge b-other">other</span>';
     const meta = [esc(r.process) + " &middot; PID " + r.pid];
     if (r.started) meta.push("up since " + esc(r.started));
-    if (r.claudeVia) meta.push(esc(r.claudeVia));
+    if (r.via) meta.push(esc(r.via));
     if (r.httpStatus) meta.push("HTTP " + r.httpStatus);
     const proj = r.project ? '<div class="meta">' + esc(r.project) + "</div>" : "";
     const cmd = r.cmdline ? '<div class="cmd" title="click to expand">' + esc(r.cmdline) + "</div>" : "";
     const killBtn = r.protected
-      ? '<button class="kill" disabled title="protected: this is Claude Code itself">Protected</button>'
+      ? '<button class="kill" disabled title="protected: this tool and the shell that launched it">Protected</button>'
       : '<button class="kill" data-pid="' + r.pid + '">Kill</button>';
     const portCell = r.http
       ? '<a href="' + esc(r.url) + '" target="_blank" rel="noreferrer">' + r.port + "</a>"
@@ -557,7 +557,7 @@ function setLive(v, note) {
     b.classList.remove("show");
   } else {
     b.innerHTML = note || ("Helper is not running, so this is a frozen snapshot. " +
-      "Re-run <code>claude-ports.bat</code> to refresh and re-enable the Kill buttons " +
+      "Re-run <code>port-killer.bat</code> to refresh and re-enable the Kill buttons " +
       "(the <em>copy taskkill</em> buttons still work).");
     b.classList.add("show");
   }
@@ -681,8 +681,8 @@ function Send-Json {
 # --------------------------------------------------------------------- start --
 
 Write-Host ''
-Write-Host '  Claude Port Cleanup' -ForegroundColor Cyan
-Write-Host '  -------------------' -ForegroundColor DarkGray
+Write-Host '  Port Killer' -ForegroundColor Cyan
+Write-Host '  -----------' -ForegroundColor DarkGray
 
 $listener   = $null
 $chosen     = 0
@@ -711,7 +711,7 @@ Write-Host '  Scanning listening ports...' -ForegroundColor DarkGray
 $payload = Get-Scan -SelfHelperPort $chosen
 Write-Page -Payload $payload -HelperUrl $helperUrl
 
-Write-Host ('  Claude: {0}   dev servers: {1}   other: {2}' -f $payload.counts.claude, $payload.counts.dev, $payload.counts.other)
+Write-Host ('  Dev servers: {0}   other: {1}' -f $payload.counts.dev, $payload.counts.other)
 Write-Host ('  Page:   {0}' -f $htmlPath) -ForegroundColor DarkGray
 
 if (-not $NoBrowser) { try { Start-Process $htmlPath | Out-Null } catch {} }
